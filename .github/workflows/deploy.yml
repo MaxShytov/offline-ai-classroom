@@ -1,0 +1,81 @@
+name: Deploy (staging/prod)
+
+on:
+  push:
+    branches: [ "main" ]           # autodeploy с main
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Environment to deploy"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Select the environment from the manual run; if empty, use staging
+    environment: ${{ github.event.inputs.target_env || 'staging' }}
+
+    env:
+      # Where is docker-compose.yml in the repository:
+      COMPOSE_DIR: docker
+      # Where to store on the server:
+      APP_DIR: ~/offline-ai-classroom
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install SSH client + rsync
+        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
+
+      - name: Prepare SSH
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p 22 "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync files to server (rsync)
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes" \
+            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ env.APP_DIR }}/
+
+      - name: Write .env on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cat > ${{ env.APP_DIR }}/${{ env.COMPOSE_DIR }}/.env <<'EOF'
+          COMPOSE_PROJECT_NAME=offline-ai-classroom
+
+          POSTGRES_DB=moodle
+          POSTGRES_USER=moodle
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+
+          MOODLE_DATABASE_TYPE=pgsql
+          MOODLE_DATABASE_HOST=postgres
+          MOODLE_DATABASE_PORT_NUMBER=5432
+          MOODLE_DATABASE_NAME=moodle
+          MOODLE_DATABASE_USER=moodle
+          MOODLE_DATABASE_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+
+          MOODLE_USERNAME=admin
+          MOODLE_PASSWORD=${{ secrets.MOODLE_PASSWORD }}
+          MOODLE_EMAIL=${{ secrets.MOODLE_EMAIL }}
+          MOODLE_SITE_NAME=${{ secrets.MOODLE_SITE_NAME }}
+
+          BITNAMI_DEBUG=true
+          EOF"
+
+      - name: Docker compose up (pull + up -d)
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cd ${{ env.APP_DIR }}/${{ env.COMPOSE_DIR }} && docker compose pull && docker compose up -d && docker compose ps"
