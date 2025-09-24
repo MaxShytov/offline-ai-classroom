@@ -12,8 +12,10 @@ jobs:
 
       - name: Add host to known_hosts
         run: |
+          set -eu
+          : "${{ secrets.VPS_HOST }}" > /dev/null
           mkdir -p ~/.ssh
-          ssh-keyscan -p 22 ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p 22 "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Write private key
         run: |
@@ -23,4 +25,4 @@ jobs:
       - name: Test SSH connection
         run: |
           ssh -o StrictHostKeyChecking=yes -i ~/.ssh/id_ed25519 \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "hostname && uptime"
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" "hostname && uptime"
