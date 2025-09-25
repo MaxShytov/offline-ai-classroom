@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Offline LLM Chat (Qwen2-0.5B)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; max-width: 720px; }
+    #log { border: 1px solid #ccc; border-radius: 8px; padding: 12px; height: 60vh; overflow: auto; }
+    .msg { margin: 8px 0; }
+    .user { font-weight: 600; }
+    textarea { width: 100%; height: 90px; }
+    button { padding: 8px 12px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>Offline LLM Chat · Qwen2-0.5B</h1>
+  <div class="toolbar">
+    <label>Endpoint:
+      <input id="endpoint" value="http://127.0.0.1:8081/v1/chat/completions" size="44" />
+    </label>
+    <label>Temp:
+      <input id="temp" type="number" value="0.3" step="0.1" min="0" max="2" style="width:64px" />
+    </label>
+    <button id="clear">clean</button>
+  </div>
+  <div id="log"></div>
+  <div class="toolbar" style="margin-top:12px">
+    <textarea id="input" placeholder="Ask a question... For example: Explain why 6+2=8 in simple words."></textarea>
+  </div>
+  <div class="toolbar">
+    <button id="send">Send</button>
+    <small>Hint: short questions work faster.</small>
+  </div>
+
+  <script>
+    const log = document.getElementById('log');
+    const input = document.getElementById('input');
+    const endpoint = document.getElementById('endpoint');
+    const temp = document.getElementById('temp');
+    const btnSend = document.getElementById('send');
+    const btnClear = document.getElementById('clear');
+
+    const systemPrompt = "You are a friendly primary-school assistant. \
+Keep answers short, simple, and safe. If the question is unsafe or personal, say \
+\"Let’s discuss it with the teacher.\" and provide a gentle alternative.";
+
+    let history = [
+      { role: "system", content: systemPrompt }
+    ];
+
+    function append(role, text) {
+      const div = document.createElement('div');
+      div.className = 'msg';
+      div.innerHTML = `<span class="${role === 'user' ? 'user' : 'assistant'}">${role}:</span> ` + 
+                      `<span>${text.replace(/\n/g,'<br>')}</span>`;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    btnClear.onclick = () => {
+      history = [{ role: "system", content: systemPrompt }];
+      log.innerHTML = '';
+    };
+
+    async function send() {
+      const q = input.value.trim();
+      if (!q) return;
+      input.value = '';
+      append('user', q);
+      history.push({ role: 'user', content: q });
+
+      const body = {
+        model: "local-llm",
+        messages: history,
+        temperature: Number(temp.value || 0.3),
+        max_tokens: 256,
+        stream: true
+      };
+
+      append('assistant', '…');
+      const last = log.lastChild.querySelector('span:nth-child(2)');
+
+      const res = await fetch(endpoint.value, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok || !res.body) {
+        last.textContent = `error: ${res.status} ${res.statusText}`;
+        return;
+      }
+
+      // OpenAI-style SSE stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let full = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+
+        // line processing: "data: {...}\n\n"
+        const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+        for (const line of lines) {
+          const data = line.substring(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const obj = JSON.parse(data);
+            const delta = obj.choices?.[0]?.delta?.content || '';
+            if (delta) {
+              full += delta;
+              last.innerHTML = full.replace(/\n/g,'<br>');
+            }
+          } catch {}
+        }
+      }
+
+      history.push({ role: 'assistant', content: full || '(empty)' });
+    }
+
+    btnSend.onclick = send;
+    input.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') send();
+    });
+  </script>
+</body>
+</html>

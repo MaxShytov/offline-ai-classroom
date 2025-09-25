@@ -29,7 +29,76 @@ services:
       timeout: 5s
       retries: 20
 
+  # --- init-контейнер: скачивает модель в именованный volume и выходит
+  model-puller:
+    image: python:3.11-slim
+    restart: "no"
+    env_file: [.env]
+    environment:
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+    volumes:
+      - llm_models:/models
+    command:
+      - sh
+      - -lc
+      - |
+        set -euo pipefail
+        apt-get update >/dev/null
+        apt-get install -y --no-install-recommends ca-certificates >/dev/null
+        rm -rf /var/lib/apt/lists/*
+        python -m pip install -q --no-cache-dir 'huggingface_hub[cli]'
+
+        # Авторизация (если токен задан)
+        if [ -n "${HF_TOKEN:-}" ]; then export HF_TOKEN="${HF_TOKEN}"; fi
+
+        # Скачиваем, если файла ещё нет (без симлинков)
+        if [ ! -f "/models/${MODEL_FILE}" ]; then
+          echo "➡️  Downloading ${MODEL_REPO} :: ${MODEL_FILE} ..."
+          hf download "${MODEL_REPO}" --include "${MODEL_FILE}" --local-dir /models ${HF_TOKEN:+--token "$HF_TOKEN"}
+          echo "✅ Downloaded: /models/${MODEL_FILE}"
+        else
+          echo "ℹ️  Model already exists: /models/${MODEL_FILE}"
+        fi
+
+        # Проверка SHA256 (если задана)
+        if [ -n "${MODEL_SHA256:-}" ]; then
+          echo "${MODEL_SHA256}  /models/${MODEL_FILE}" | sha256sum -c -
+          echo "✅ SHA256 OK"
+        else
+          echo "⚠️  MODEL_SHA256 not set — skip integrity check"
+        fi
+
+
+  # --- LLM сервер (llama.cpp)
+  llm:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    container_name: offline-llm
+    restart: unless-stopped
+    depends_on:
+      model-puller:
+        condition: service_completed_successfully
+    env_file: [.env]
+    volumes:
+      - llm_models:/models
+    ports:
+      - "127.0.0.1:${LLM_HOST_PORT}:8080"
+    command: >
+      --model /models/${MODEL_FILE}
+      --host 0.0.0.0
+      --port 8080
+      --ctx-size ${LLM_CTX}
+      --threads ${LLM_THREADS}
+      --parallel ${LLM_PARALLEL}
+      --batch-size 256
+      --n-gpu-layers 0
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pgdata:
   moodle_app:
   moodle_data:
+  llm_models:
